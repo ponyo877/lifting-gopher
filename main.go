@@ -4,22 +4,31 @@
 package main
 
 import (
+	"bytes"
+	"embed"
 	"fmt"
 	"image"
 	"image/color"
 	"log"
 	"syscall/js"
 
+	"github.com/ponyo877/lifting-gopher/img"
+
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
+	"github.com/hajimehoshi/ebiten/v2/examples/resources/fonts"
+	"github.com/hajimehoshi/ebiten/v2/text/v2"
+	"github.com/hajimehoshi/ebiten/v2/vector"
 )
 
 var (
-	video   js.Value
-	stream  js.Value
-	canvas  js.Value
-	ctx     js.Value
-	bgCache graycache
+	video            js.Value
+	stream           js.Value
+	canvas           js.Value
+	ctx              js.Value
+	bgCache          graycache
+	gopher           *ebiten.Image
+	arcadeFaceSource *text.GoTextFaceSource
 )
 
 const (
@@ -29,9 +38,23 @@ const (
 	buttonHeight = 50
 )
 
+//go:embed img/*
+var files embed.FS
+
 func init() {
-	doc := js.Global().Get("document")
+	img, _, err := image.Decode(bytes.NewReader(img.Gopher))
+	if err != nil {
+		log.Fatal(err)
+	}
+	gopher = ebiten.NewImageFromImage(img)
+	s, err := text.NewGoTextFaceSource(bytes.NewReader(fonts.PressStart2P_ttf))
+	if err != nil {
+		log.Fatal(err)
+	}
+	arcadeFaceSource = s
 	bgCache = make(graycache, ScreenWidth*ScreenHeight)
+
+	doc := js.Global().Get("document")
 	video = doc.Call("createElement", "video")
 	canvas = doc.Call("createElement", "canvas")
 	video.Set("autoplay", true)
@@ -63,20 +86,27 @@ func fetchVideoFrame() []byte {
 	return goBin
 }
 
-func generateCurrentCache() graycache {
-	return newGrayCacheFromData(fetchVideoFrame(), ScreenWidth, ScreenHeight)
-}
-
 type Game struct {
 	drawImg *ebiten.Image
 	button  *ebiten.Image
+	paths   []vector.Path
+	y       float64
+	gv      float64
 }
 
 func buttonImage() *ebiten.Image {
+	fsize := 10.0
 	img := ebiten.NewImage(buttonWidth, buttonHeight)
 	img.Fill(color.White)
-	// write text ib button
-	// drawText(img, "Capture", 10, 20, 20, color.Black)
+	op := &text.DrawOptions{}
+	op.GeoM.Translate(float64(img.Bounds().Dx())/2, float64(img.Bounds().Dy())/2-fsize/2)
+	op.ColorScale.ScaleWithColor(color.Black)
+	op.LineSpacing = fsize
+	op.PrimaryAlign = text.AlignCenter
+	text.Draw(img, "BG CAPTURE", &text.GoTextFace{
+		Source: arcadeFaceSource,
+		Size:   fsize,
+	}, op)
 	return img
 }
 
@@ -84,6 +114,9 @@ func newGame() *Game {
 	return &Game{
 		drawImg: ebiten.NewImage(ScreenWidth, ScreenHeight),
 		button:  buttonImage(),
+		paths:   []vector.Path{},
+		y:       0,
+		gv:      0.25,
 	}
 }
 
@@ -91,26 +124,64 @@ func (g *Game) Update() error {
 	if !ctx.Truthy() {
 		return nil
 	}
-	crCache := generateCurrentCache()
-	diff := cacheDiffImg(bgCache, crCache, ScreenWidth, ScreenHeight)
-	g.drawImg = ebiten.NewImageFromImage(diff)
-	// g.drawImg = ebiten.NewImageFromImage(newImage(fetchVideoFrame(), ScreenWidth, ScreenHeight))
+	g.y += g.gv
+	g.gv += 0.01
+	goBin := fetchVideoFrame()
+	crCache := newGrayCacheFromData(goBin, ScreenWidth, ScreenHeight)
+	mp := cacheDiffBitmap(bgCache, crCache, ScreenWidth, ScreenHeight)
+	if mp[Point{ScreenWidth / 2, int(g.y)}] {
+		g.gv = -1
+	} else if g.y > ScreenHeight-float64(gopher.Bounds().Dy())/2 {
+		g.gv = 0
+	}
+
+	g.drawImg = ebiten.NewImageFromImage(newImage(goBin, ScreenWidth, ScreenHeight))
 
 	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
 		x, y := ebiten.CursorPosition()
 		sx, sy := ScreenWidth/2-buttonWidth/2, ScreenHeight+buttonHeight
 		if x >= sx && x <= sx+buttonWidth && y >= sy && y <= sy+buttonHeight {
-			bgCache = generateCurrentCache()
+			bgCache = newGrayCacheFromData(goBin, ScreenWidth, ScreenHeight)
 		}
 	}
 	return nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	screen.DrawImage(g.drawImg, nil)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(ScreenWidth/2-buttonWidth/2, ScreenHeight+buttonHeight)
+	screen.DrawImage(g.button, op)
+
+	opg := &ebiten.DrawImageOptions{}
+	w, h := gopher.Bounds().Dx(), gopher.Bounds().Dy()
+	opg.GeoM.Translate(-float64(w)/2.0, -float64(h)/2.0)
+	opg.GeoM.Translate(ScreenWidth/2-buttonWidth/2, float64(g.y))
+	screen.DrawImage(gopher, opg)
+	ebitenutil.DebugPrint(screen, fmt.Sprintf("%f", ebiten.ActualFPS()))
+	ebitenutil.DebugPrint(screen, "\nThe Go gopher was designed by Renée French.")
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
+	return ScreenWidth * 2, ScreenHeight * 2
+}
+
+func main() {
+	ebiten.SetWindowSize(ScreenWidth, ScreenHeight)
+	ebiten.SetWindowTitle("Lifting Gopher")
+	if err := ebiten.RunGame(newGame()); err != nil {
+		log.Fatal(err)
+	}
+}
+
+type Point struct {
+	x, y int
 }
 
 func newImage(data []byte, w, h int) *image.RGBA {
 	m := image.NewRGBA(image.Rect(0, 0, w, h))
 	for x := 0; x < w; x++ {
 		for y := 0; y < h; y++ {
-			// p := x*h + y // shadow clone
 			p := y*w + x
 			r := uint8(data[p*4])
 			g := uint8(data[p*4+1])
@@ -123,17 +194,6 @@ func newImage(data []byte, w, h int) *image.RGBA {
 }
 
 type graycache []int
-
-func newGrayCache(rgba *image.RGBA, w, h int) graycache {
-	gc := make(graycache, w*h)
-	for x := 0; x < w; x++ {
-		for y := 0; y < h; y++ {
-			r, g, b, _ := rgba.At(x, y).RGBA()
-			gc[y*w+x] = grayscale(r, g, b, 0)
-		}
-	}
-	return gc
-}
 
 func newGrayCacheFromData(data []byte, w, h int) graycache {
 	gc := make(graycache, w*h)
@@ -153,40 +213,18 @@ func grayscale(r, g, b, _ uint32) int {
 	return int(0.299*float64(r/257) + 0.587*float64(g/257) + 0.114*float64(b/257))
 }
 
-func cacheDiffImg(bg, cr graycache, w, h int) *image.RGBA {
-	diff := image.NewRGBA(image.Rect(0, 0, w, h))
+func cacheDiffBitmap(bg, cr graycache, w, h int) map[Point]bool {
+	mp := make(map[Point]bool)
 	for x := 0; x < w; x++ {
 		for y := 0; y < h; y++ {
-			t := thresholding(cr[y*w+x]-bg[y*w+x], 30)
-			diff.Set(x, y, color.RGBA{t, t, t, 255})
+			if isOverThreshold(cr[y*w+x]-bg[y*w+x], 30) {
+				mp[Point{x, y}] = true
+			}
 		}
 	}
-	return diff
+	return mp
 }
 
-func thresholding(diff, t int) uint8 {
-	if diff > t {
-		return 255
-	}
-	return 0
-}
-
-func (g *Game) Draw(screen *ebiten.Image) {
-	screen.DrawImage(g.drawImg, nil)
-	op := &ebiten.DrawImageOptions{}
-	op.GeoM.Translate(ScreenWidth/2-buttonWidth/2, ScreenHeight+buttonHeight)
-	screen.DrawImage(g.button, op)
-	ebitenutil.DebugPrint(screen, fmt.Sprintf("%f", ebiten.ActualFPS()))
-}
-
-func (g *Game) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
-	return ScreenWidth * 2, ScreenHeight * 2
-}
-
-func main() {
-	ebiten.SetWindowSize(ScreenWidth, ScreenHeight)
-	ebiten.SetWindowTitle("Lifting Gopher")
-	if err := ebiten.RunGame(newGame()); err != nil {
-		log.Fatal(err)
-	}
+func isOverThreshold(diff, t int) bool {
+	return diff > t
 }
