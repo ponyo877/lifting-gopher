@@ -4,6 +4,7 @@ Lifting Gopher is an interactive web application that uses WebAssembly and Go to
 
 ## Demo
 Check out the live demo: [Lifting Gopher Demo Page](https://lifting-gopher.pages.dev)
+
 https://github.com/user-attachments/assets/db427a0e-2bdc-47df-a8b7-ca2a258fe40f
 
 ## Features
