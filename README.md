@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/db427a0e-2bdc-47df-a8b7-ca2a258fe40f
 
 - Real-time video capture
 - Fun gopher animation overlay
-- Built with Go and WebAssembly
+- Built with Go and WebAssembly(using Ebitengine)
 
 ## Installation
 
